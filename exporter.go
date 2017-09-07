@@ -14,162 +14,205 @@
 package main
 
 import (
+	"compress/gzip"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
+	"math"
 	"net/http"
+	"os"
 	"strconv"
+
 	"time"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/golang/snappy"
 	"github.com/prometheus/common/model"
-
 	"github.com/prometheus/prometheus/storage/remote"
 )
 
-const MAX_AGGREGATION_NUMBER int = 4000
-const MAX_AGGREGATION_INTERVAL_MS time.Duration = 200 * time.Microsecond
+const T1_TIMEOUT = time.Second * 5
 
-var FileSequenceNo int = 1
+//Events:
+// type Exit struct{}
+// type Timeout struct {
+// 	Now time.Time
+// }
 
-type Exit struct{}
+//Runnable
+func aggregate(from chan *[]byte, to chan *TimeSeriesPackage, t1 *time.Timer) {
 
-type Timeout struct {
-	Now time.Time
-}
-
-type TimeSeriesPackage struct {
-	FileName        string
-	TimeSeriesArray []*[]byte
-}
-
-func newFileName() string {
-	now := time.Now()
-	return "ASSCY" + "-" + now.Format("2017-09-06") + "-" + strconv.Itoa(now.Hour()) + "-" + strconv.Itoa(now.Minute()) + "-" + strconv.Itoa(now.Second()) + "-" + strconv.Itoa(FileSequenceNo)
-}
-
-func Aggregate(from chan interface{}, to chan *TimeSeriesPackage, t1 *time.Timer) {
-
-	//	var counter int = 0
-	//	tsa := make([]*[]byte, MAX_AGGREGATION_NUMBER)
-
-	var msg interface{}
+	var tsp *TimeSeriesPackage
+	tsp = NewTimeSeriesPackage()
 
 	for {
-		//		select {
-		//		case ts := <-from:
-		msg = <-from
-		switch msg.(type) {
-		case *[]byte:
-			fmt.Println(*msg.(*[]byte))
+		select {
+		case ts := <-from:
 
-			//Do aggregation...
-			t1.Reset(time.Second * 10)
+			tsp.AddTimeSeries(ts)
+			if tsp.isFull() {
+				tsp = pack(tsp, to, t1)
+			}
 
-		case Timeout:
+		case <-t1.C:
+			// fmt.Printf("Timeout!\n")
 
-			fmt.Println(msg.(Timeout).Now.Format("2006-01-02 15:04:05.999999999 -0700 MST"))
-
-			//Do aggregation...
-
-			//Restart timer
-			t1.Reset(time.Second * 10)
-		case Exit:
-			return
+			if tsp.isNotEmpty() {
+				//if counter > 0 send to export().
+				tsp = pack(tsp, to, t1)
+			} else {
+				// fmt.Println("Reset timer...")
+				t1.Reset(T1_TIMEOUT)
+			}
 		}
 
-		//		fmt.Println(*ts)
-		//			tsa[counter] = ts
-		//			counter++
-
-		//			if counter >= MAX_AGGREGATION_NUMBER {
-		//				//Stop timer
-
-		//				tsp := new(TimeSeriesPackage)
-		//				tsp.FileName = newFileName()
-		//				tsp.TimeSeriesArray = tsa
-
-		//				to <- tsp
-
-		//				//Restart timer
-		//			}
-
-		//	case <-abort:
-		//		fmt.Printf("Aborted!\n")
-		//		default:
-		//			time.Sleep(MAX_AGGREGATION_INTERVAL_MS)
-		//		}
-
 	}
 }
 
-func Export(from chan *TimeSeriesPackage) {
+func pack(tsp *TimeSeriesPackage, to chan *TimeSeriesPackage, t1 *time.Timer) *TimeSeriesPackage {
+	fmt.Println("Pack...")
+	//Stop timer
+	t1.Stop()
+
+	//Send to export()
+	to <- tsp
+
+	// New TimeSeriesPackage
+	newtsp := NewTimeSeriesPackage()
+	//Restart timer
+	t1.Reset(T1_TIMEOUT)
+
+	return newtsp
+}
+
+//Runnable export(),
+func export(from chan *TimeSeriesPackage) {
 	for {
 		tsp := <-from
-		exportToFile(tsp)
-		//	case <-abort:
-		//		fmt.Printf("Aborted!\n")
+		processTimeSeriesPackage(tsp)
 	}
 }
 
-func exportToFile(tsp *TimeSeriesPackage) {
-
+func processTimeSeriesPackage(tsp *TimeSeriesPackage) {
 	defer func() {
 		if p := recover(); p != nil {
-			log.Panicln("Export to file error: %v", p)
+			log.Println(p)
 		}
 	}()
 
-	compressed := tsp.TimeSeriesArray[0]
-
-	reqBuf, err := snappy.Decode(nil, *compressed)
-	if err != nil {
-		log.Panicln(err.Error())
-		return
-	}
-
-	var req remote.WriteRequest
-	if err := proto.Unmarshal(reqBuf, &req); err != nil {
-		log.Panicln(err.Error())
-		return
-	}
-
-	//fmt.Printf("Total = %d, ContentLength = %d\n", len(req.Timeseries), r.ContentLength)
-
-	for _, ts := range req.Timeseries {
-		m := make(model.Metric, len(ts.Labels))
-		for _, l := range ts.Labels {
-			m[model.LabelName(l.Name)] = model.LabelValue(l.Value)
-		}
-		fmt.Println(m)
-
-		for _, s := range ts.Samples {
-			fmt.Printf("  %f %d\n", s.Value, s.TimestampMs)
-		}
-	}
+	writeToFile(tsp)
+	compressFile(tsp.FileName)
 }
 
-func handleTimeout(t *time.Timer, to chan interface{}) {
-	for {
-		to <- Timeout{<-t.C}
+func writeToFile(tsp *TimeSeriesPackage) {
+
+	file, _ := os.Create(tsp.FileName)
+	defer func() {
+		if file != nil {
+			file.Close()
+		}
+	}()
+
+	for _, compressed := range tsp.TimeSeriesArray {
+		if compressed == nil {
+			log.Println("Gotten compressed request body from prometheus is nil!")
+			continue
+		}
+
+		// Write compressed
+		reqBuf, err := snappy.Decode(nil, *compressed)
+		if err != nil {
+			log.Println(err.Error())
+			continue
+		}
+		var req remote.WriteRequest
+		if err := proto.Unmarshal(reqBuf, &req); err != nil {
+			log.Println(err.Error())
+			continue
+		}
+
+		var (
+			metricName *string
+		)
+		for _, ts := range req.Timeseries {
+
+			//Look for MetricNameLabel
+			for _, l := range ts.Labels {
+				if l.Name == model.MetricNameLabel {
+					metricName = &(l.Value)
+				}
+			}
+			if metricName == nil {
+				continue
+			}
+			for _, s := range ts.Samples {
+
+				if math.IsNaN(s.Value) {
+					continue //skip the NaN value
+				}
+				_, err = file.WriteString(*metricName + " " + strconv.FormatInt(s.TimestampMs, 10) + " " + strconv.FormatFloat(s.Value, 'f', 6, 64) + " ")
+
+				for _, l := range ts.Labels {
+					if l.Name == model.MetricNameLabel {
+						continue //skip label __name__
+					}
+					_, err = file.WriteString(l.Name + "=" + l.Value + " ")
+				}
+				_, err = file.WriteString("\n")
+			}
+
+		}
+
+		// _, err = file.Write(buf)
+		if err != nil {
+			log.Printf("Error: %s raised when writing metric %s to file %s \n", err.Error(), *metricName, tsp.FileName)
+		}
+
 	}
+
+}
+
+func compressFile(filename string) (string, error) {
+
+	dstFileName := filename + ".gz"
+	d, _ := os.Create(dstFileName)
+	defer d.Close()
+	gw := gzip.NewWriter(d)
+	defer gw.Close()
+
+	tmp, err := os.Open(filename)
+	defer func() {
+		tmp.Close()
+		err := os.Remove(filename)
+		if err != nil {
+			log.Printf("Error: %s occurred when deleting the original data file %s.", err.Error(), filename)
+		}
+	}()
+	_, err = io.Copy(gw, tmp)
+	gw.Flush()
+
+	return dstFileName, err
 }
 
 func main() {
 
-	//Channel for compressed time series from HTTP handler
-	tsch := make(chan interface{}, 10000)
+	var (
+		//Channel for compressed time series from HTTP handler, make sure not any delay impacts on the HTTP handler side.
+		tsch = make(chan *[]byte, 10000)
 
-	//Channel for file writers
-	tspch := make(chan *TimeSeriesPackage, 100)
+		//Channel for file writers
+		tspch = make(chan *TimeSeriesPackage, 100)
 
-	t1 := time.NewTimer(time.Second * 2)
-	go handleTimeout(t1, tsch)
+		t1 = time.NewTimer(T1_TIMEOUT)
+	)
 
 	//Start aggregator and file writer goroutines.
-	go Aggregate(tsch, tspch, t1)
-	go Export(tspch)
+	go aggregate(tsch, tspch, t1)
+
+	for i := 0; i < 2; i++ {
+		go export(tspch)
+	}
 
 	//Launch HTTP server
 	http.HandleFunc("/receive", func(w http.ResponseWriter, r *http.Request) {
@@ -179,12 +222,6 @@ func main() {
 			return
 		}
 		tsch <- &compressed
-	})
-
-	http.HandleFunc("/shutdown", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" {
-			tsch <- Exit{}
-		}
 	})
 
 	log.Fatal(http.ListenAndServe(":1234", nil))
