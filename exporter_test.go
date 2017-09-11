@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"testing"
+
+	pool "github.com/jolestar/go-commons-pool"
 )
 
 func TestNewFileName(t *testing.T) {
@@ -21,7 +23,7 @@ func Test_compressFile(t *testing.T) {
 		wantErr bool
 	}{
 		// TODO: Add test cases.ls
-		
+
 		{"test1", args{"README.md"}, "", false},
 	}
 	for _, tt := range tests {
@@ -36,4 +38,13 @@ func Test_compressFile(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPool(t *testing.T) {
+	//Initializes the FileWriter pool
+	fwf, _ := NewFileWriterFactory()
+	p := pool.NewObjectPoolWithDefaultConfig(fwf)
+	p.Config.MaxTotal = 100
+	obj, _ := p.BorrowObject()
+	p.ReturnObject(obj)
 }

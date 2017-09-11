@@ -14,15 +14,10 @@
 package main
 
 import (
-	"compress/gzip"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"log"
-	"math"
 	"net/http"
-	"os"
-	"strconv"
 
 	"time"
 
@@ -41,178 +36,155 @@ const T1_TIMEOUT = time.Second * 5
 // }
 
 //Runnable
-func aggregate(from chan *[]byte, to chan *TimeSeriesPackage, t1 *time.Timer) {
+// func aggregate(from chan *[]byte, to chan *TimeSeriesPackage, t1 *time.Timer) {
 
-	var tsp *TimeSeriesPackage
-	tsp = NewTimeSeriesPackage()
+// 	var tsp *TimeSeriesPackage
+// 	tsp = NewTimeSeriesPackage()
 
-	for {
-		select {
-		case ts := <-from:
+// 	for {
+// 		select {
+// 		case ts := <-from:
 
-			tsp.AddTimeSeries(ts)
-			if tsp.isFull() {
-				tsp = pack(tsp, to, t1)
-			}
+// 			tsp.AddTimeSeries(ts)
+// 			if tsp.isFull() {
+// 				tsp = pack(tsp, to, t1)
+// 			}
 
-		case <-t1.C:
-			// fmt.Printf("Timeout!\n")
+// 		case <-t1.C:
+// 			// fmt.Printf("Timeout!\n")
 
-			if tsp.isNotEmpty() {
-				//if counter > 0 send to export().
-				tsp = pack(tsp, to, t1)
-			} else {
-				// fmt.Println("Reset timer...")
-				t1.Reset(T1_TIMEOUT)
-			}
-		}
+// 			if tsp.isNotEmpty() {
+// 				//if counter > 0 send to export().
+// 				tsp = pack(tsp, to, t1)
+// 			} else {
+// 				// fmt.Println("Reset timer...")
+// 				t1.Reset(T1_TIMEOUT)
+// 			}
+// 		}
 
-	}
-}
+// 	}
+// }
 
-func pack(tsp *TimeSeriesPackage, to chan *TimeSeriesPackage, t1 *time.Timer) *TimeSeriesPackage {
-	fmt.Println("Pack...")
-	//Stop timer
-	t1.Stop()
+// func pack(tsp *TimeSeriesPackage, to chan *TimeSeriesPackage, t1 *time.Timer) *TimeSeriesPackage {
+// 	fmt.Println("Pack...")
+// 	//Stop timer
+// 	t1.Stop()
 
-	//Send to export()
-	to <- tsp
+// 	//Send to export()
+// 	to <- tsp
 
-	// New TimeSeriesPackage
-	newtsp := NewTimeSeriesPackage()
-	//Restart timer
-	t1.Reset(T1_TIMEOUT)
+// 	// New TimeSeriesPackage
+// 	newtsp := NewTimeSeriesPackage()
+// 	//Restart timer
+// 	t1.Reset(T1_TIMEOUT)
 
-	return newtsp
-}
+// 	return newtsp
+// }
 
-//Runnable export(),
-func export(from chan *TimeSeriesPackage) {
-	for {
-		tsp := <-from
-		processTimeSeriesPackage(tsp)
-	}
-}
+// //Runnable export(),
+// func export(from chan *TimeSeriesPackage) {
+// 	for {
+// 		tsp := <-from
+// 		processTimeSeriesPackage(tsp)
+// 	}
+// }
 
-func processTimeSeriesPackage(tsp *TimeSeriesPackage) {
-	defer func() {
-		if p := recover(); p != nil {
-			log.Println(p)
-		}
-	}()
+// func processTimeSeriesPackage(tsp *TimeSeriesPackage) {
+// 	defer func() {
+// 		if p := recover(); p != nil {
+// 			log.Println(p)
+// 		}
+// 	}()
 
-	writeToFile(tsp)
-	compressFile(tsp.FileName)
-}
+// 	writeToFile(tsp)
+// 	compressFile(tsp.FileName)
+// }
 
-func writeToFile(tsp *TimeSeriesPackage) {
+// func writeToFile(tsp *TimeSeriesPackage) {
 
-	file, _ := os.Create(tsp.FileName)
-	defer func() {
-		if file != nil {
-			file.Close()
-		}
-	}()
+// 	file, _ := os.Create(tsp.FileName)
+// 	defer func() {
+// 		if file != nil {
+// 			file.Close()
+// 		}
+// 	}()
 
-	for _, compressed := range tsp.TimeSeriesArray {
-		if compressed == nil {
-			log.Println("Gotten compressed request body from prometheus is nil!")
-			continue
-		}
+// 	for _, compressed := range tsp.TimeSeriesArray {
+// 		if compressed == nil {
+// 			log.Println("Gotten compressed request body from prometheus is nil!")
+// 			continue
+// 		}
 
-		// Write compressed
-		reqBuf, err := snappy.Decode(nil, *compressed)
-		if err != nil {
-			log.Println(err.Error())
-			continue
-		}
-		var req remote.WriteRequest
-		if err := proto.Unmarshal(reqBuf, &req); err != nil {
-			log.Println(err.Error())
-			continue
-		}
+// 		// Write compressed
+// 		reqBuf, err := snappy.Decode(nil, *compressed)
+// 		if err != nil {
+// 			log.Println(err.Error())
+// 			continue
+// 		}
+// 		var req remote.WriteRequest
+// 		if err := proto.Unmarshal(reqBuf, &req); err != nil {
+// 			log.Println(err.Error())
+// 			continue
+// 		}
 
-		var (
-			metricName *string
-		)
-		for _, ts := range req.Timeseries {
+// 		var (
+// 			metricName *string
+// 		)
+// 		for _, ts := range req.Timeseries {
 
-			//Look for MetricNameLabel
-			for _, l := range ts.Labels {
-				if l.Name == model.MetricNameLabel {
-					metricName = &(l.Value)
-				}
-			}
-			if metricName == nil {
-				continue
-			}
-			for _, s := range ts.Samples {
+// 			//Look for MetricNameLabel
+// 			for _, l := range ts.Labels {
+// 				if l.Name == model.MetricNameLabel {
+// 					metricName = &(l.Value)
+// 				}
+// 			}
+// 			if metricName == nil {
+// 				continue
+// 			}
+// 			for _, s := range ts.Samples {
 
-				if math.IsNaN(s.Value) {
-					continue //skip the NaN value
-				}
-				_, err = file.WriteString(*metricName + " " + strconv.FormatInt(s.TimestampMs, 10) + " " + strconv.FormatFloat(s.Value, 'f', 6, 64) + " ")
+// 				if math.IsNaN(s.Value) {
+// 					continue //skip the NaN value
+// 				}
+// 				_, err = file.WriteString(*metricName + " " + strconv.FormatInt(s.TimestampMs, 10) + " " + strconv.FormatFloat(s.Value, 'f', 6, 64) + " ")
 
-				for _, l := range ts.Labels {
-					if l.Name == model.MetricNameLabel {
-						continue //skip label __name__
-					}
-					_, err = file.WriteString(l.Name + "=" + l.Value + " ")
-				}
-				_, err = file.WriteString("\n")
-			}
+// 				for _, l := range ts.Labels {
+// 					if l.Name == model.MetricNameLabel {
+// 						continue //skip label __name__
+// 					}
+// 					_, err = file.WriteString(l.Name + "=" + l.Value + " ")
+// 				}
+// 				_, err = file.WriteString("\n")
+// 			}
 
-		}
+// 		}
 
-		// _, err = file.Write(buf)
-		if err != nil {
-			log.Printf("Error: %s raised when writing metric %s to file %s \n", err.Error(), *metricName, tsp.FileName)
-		}
+// 		// _, err = file.Write(buf)
+// 		if err != nil {
+// 			log.Printf("Error: %s raised when writing metric %s to file %s \n", err.Error(), *metricName, tsp.FileName)
+// 		}
 
-	}
+// 	}
 
-}
-
-func compressFile(filename string) (string, error) {
-
-	dstFileName := filename + ".gz"
-	d, _ := os.Create(dstFileName)
-	defer d.Close()
-	gw := gzip.NewWriter(d)
-	defer gw.Close()
-
-	tmp, err := os.Open(filename)
-	defer func() {
-		tmp.Close()
-		err := os.Remove(filename)
-		if err != nil {
-			log.Printf("Error: %s occurred when deleting the original data file %s.", err.Error(), filename)
-		}
-	}()
-	_, err = io.Copy(gw, tmp)
-	gw.Flush()
-
-	return dstFileName, err
-}
+// }
 
 func main() {
 
-	var (
-		//Channel for compressed time series from HTTP handler, make sure not any delay impacts on the HTTP handler side.
-		tsch = make(chan *[]byte, 10000)
+	// var (
+	// 	//Channel for compressed time series from HTTP handler, make sure not any delay impacts on the HTTP handler side.
+	// 	tsch = make(chan *[]byte, 10000)
 
-		//Channel for file writers
-		tspch = make(chan *TimeSeriesPackage, 100)
+	// 	//Channel for file writers
+	// 	tspch = make(chan *TimeSeriesPackage, 100)
 
-		t1 = time.NewTimer(T1_TIMEOUT)
-	)
+	// 	t1 = time.NewTimer(T1_TIMEOUT)
+	// )
 
-	//Start aggregator and file writer goroutines.
-	go aggregate(tsch, tspch, t1)
-
-	for i := 0; i < 2; i++ {
-		go export(tspch)
-	}
+	//Initializes the FileWriter pool
+	// p := pool.NewObjectPoolWithDefaultConfig(pool.NewPooledObjectFactorySimple(
+	// 	func() (interface{}, error) {
+	// 		return &MyPoolObject{}, nil
+	// 	}))
 
 	//Launch HTTP server
 	http.HandleFunc("/receive", func(w http.ResponseWriter, r *http.Request) {
@@ -221,7 +193,32 @@ func main() {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		tsch <- &compressed
+
+		reqBuf, err := snappy.Decode(nil, compressed)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		var req remote.WriteRequest
+		if err := proto.Unmarshal(reqBuf, &req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		fmt.Printf("Total = %d, ContentLength = %d\n", len(req.Timeseries), r.ContentLength)
+
+		for _, ts := range req.Timeseries {
+			m := make(model.Metric, len(ts.Labels))
+			for _, l := range ts.Labels {
+				m[model.LabelName(l.Name)] = model.LabelValue(l.Value)
+			}
+			fmt.Println(m)
+
+			for _, s := range ts.Samples {
+				fmt.Printf("  %f %d\n", s.Value, s.TimestampMs)
+			}
+		}
 	})
 
 	log.Fatal(http.ListenAndServe(":1234", nil))
