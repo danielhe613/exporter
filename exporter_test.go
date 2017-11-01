@@ -1,50 +1,36 @@
 package main
 
 import (
-	"fmt"
 	"testing"
+	"time"
 
 	pool "github.com/jolestar/go-commons-pool"
 )
 
-func TestNewFileName(t *testing.T) {
-	fmt.Println("Hello World!")
-	t.Error(newFileName())
-}
-
-func Test_compressFile(t *testing.T) {
-	type args struct {
-		filename string
-	}
-	tests := []struct {
-		name    string
-		args    args
-		want    string
-		wantErr bool
-	}{
-		// TODO: Add test cases.ls
-
-		{"test1", args{"README.md"}, "", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := compressFile(tt.args.filename)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("compressFile() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if got != tt.want {
-				t.Errorf("compressFile() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestPool(t *testing.T) {
 	//Initializes the FileWriter pool
-	fwf, _ := NewFileWriterFactory()
+	fwf, _ := NewFileWriterFactory("master")
 	p := pool.NewObjectPoolWithDefaultConfig(fwf)
 	p.Config.MaxTotal = 100
-	obj, _ := p.BorrowObject()
-	p.ReturnObject(obj)
+	obj1, _ := p.BorrowObject()
+	defer p.ReturnObject(obj1)
+
+	obj2, _ := p.BorrowObject()
+	defer p.ReturnObject(obj2)
+
+}
+
+func TestChannelClosed(t *testing.T) {
+
+	ch := make(chan int, 10)
+
+	close(ch)
+
+	go func() {
+
+		time.Sleep(time.Second * 2)
+		ch <- 1
+
+	}()
+
 }
